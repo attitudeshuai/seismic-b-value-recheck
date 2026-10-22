@@ -18,16 +18,17 @@ APP = os.environ.get("CT_APP_DIR", "/app")
 ENTRY = os.path.join(APP, "src", "seismic.py")
 
 WEIGHTS = {
-    "test_b_value_matches_aki_utsu_on_base_catalog": 0.16,
-    "test_b_value_second_catalog_with_other_parameters": 0.13,
-    "test_magnitude_bin_correction_matters": 0.12,
-    "test_a_value_and_annual_rate_match": 0.10,
-    "test_target_probability_matches_poisson": 0.09,
-    "test_catalog_truncated_at_completeness_magnitude": 0.10,
-    "test_invalid_catalog_rejected_without_output": 0.12,
-    "test_report_schema_and_rounding": 0.08,
+    "test_b_value_matches_aki_utsu_on_base_catalog": 0.14,
+    "test_b_value_second_catalog_with_other_parameters": 0.12,
+    "test_magnitude_bin_correction_matters": 0.11,
+    "test_a_value_and_annual_rate_match": 0.09,
+    "test_target_probability_matches_poisson": 0.08,
+    "test_catalog_truncated_at_completeness_magnitude": 0.09,
+    "test_segment_split_matches_mle_search": 0.10,
+    "test_invalid_catalog_rejected_without_output": 0.11,
+    "test_report_schema_and_rounding": 0.07,
     "test_rerun_produces_identical_bytes": 0.05,
-    "test_failed_run_keeps_previous_report": 0.05,
+    "test_failed_run_keeps_previous_report": 0.04,
 }
 
 
@@ -42,18 +43,23 @@ class _Lcg(object):
 
 
 def make_catalog(b_value=1.05, mc=2.5, width=0.1, n=800, n_below=0, years=10.0,
-                 seed=101, target=6.5, horizon=30.0, start_year=2012):
+                 seed=101, target=6.5, horizon=30.0, start_year=2012,
+                 b_after=None, split_frac=0.55):
     rng = _Lcg(seed)
-    beta = b_value * math.log(10.0)
+    raw = []
+    for _ in range(n):
+        raw.append((rng.next_u() * years, rng.next_u(), rng.next_u(), rng.next_u(), rng.next_u()))
+    raw.sort(key=lambda r: r[0])
     events = []
-    for i in range(n):
-        mag = mc + (-math.log(1.0 - rng.next_u() * 0.999999)) / beta
+    for pos, (off, u_mag, u_lon, u_lat, u_depth) in enumerate(raw):
+        frac = pos / float(n)
+        b_here = b_value if (b_after is None or frac < split_frac) else b_after
+        mag = mc + (-math.log(1.0 - u_mag * 0.999999)) / (b_here * math.log(10.0))
         mag = math.floor(mag / width) * width
-        off = rng.next_u() * years
         events.append({
-            "id": "a%05d" % (i + 1),
-            "time_utc": "%04d-%02d-%02dT%02d:00:00Z" % (start_year + int(off), 1 + int(rng.next_u() * 11),
-                                                       1 + int(rng.next_u() * 27), int(rng.next_u() * 23)),
+            "id": "a%05d" % (pos + 1),
+            "time_utc": "%04d-%02d-%02dT%02d:00:00Z" % (start_year + int(off), 1 + int(u_lon * 12) % 12,
+                                                       1 + int(u_lat * 28) % 28, int(u_depth * 24) % 24),
             "lon": 100.0, "lat": 25.0, "depth_km": 10.0,
             "mag": round(mag, 1),
         })
@@ -247,7 +253,8 @@ def test_report_schema_and_rounding():
     if not isinstance(report, dict):
         return False
     need = {"n_total", "n_selected", "mc", "magnitude_bin", "observation_years", "b_value",
-            "b_sigma", "a_value", "annual_rate_target", "probability_horizon", "meta"}
+            "b_sigma", "a_value", "annual_rate_target", "probability_horizon", "meta",
+            "segmentation"}
     if not need.issubset(set(report)):
         return False
     for key in ("b_value", "b_sigma", "a_value"):
@@ -257,6 +264,15 @@ def test_report_schema_and_rounding():
     for key in ("annual_rate_target", "probability_horizon"):
         v = float(report[key])
         if not math.isfinite(v) or abs(v - round(v, 4)) > 1e-12:
+            return False
+    seg = report.get("segmentation")
+    if not isinstance(seg, dict):
+        return False
+    if abs(float(seg["split_years"]) - round(float(seg["split_years"]), 2)) > 1e-12:
+        return False
+    for key in ("b_before", "b_after", "delta_lnl"):
+        v = float(seg[key])
+        if not math.isfinite(v) or abs(v - round(v, 3)) > 1e-12:
             return False
     raw = open(ctx["out"], encoding="utf-8").read()
     return "NaN" not in raw and "Infinity" not in raw
@@ -301,6 +317,66 @@ def test_failed_run_keeps_previous_report():
     if second.returncode != 2:
         return False
     return open(opath, "rb").read() == before
+
+
+MIN_SEGMENT_EVENTS = 60
+
+
+def _seg_lnl(mags, m0):
+    n = len(mags)
+    beta = 1.0 / (sum(mags) / n - m0)
+    return n * (math.log(beta) - 1.0)
+
+
+def segment_expected(data):
+    """独立复算最优分段：两段对数似然之和最大，两段各至少 60 条。"""
+    cat = data["catalog"]
+    mc, width = float(cat["mc"]), float(cat["magnitude_bin"])
+    ev = [e for e in cat["events"] if float(e["mag"]) >= mc]
+    ev.sort(key=lambda e: e["time_utc"])
+    mags = [float(e["mag"]) for e in ev]
+    times = [dt.datetime.fromisoformat(e["time_utc"].replace("Z", "+00:00")) for e in ev]
+    m0 = mc - width / 2.0
+    n = len(mags)
+    if n < 2 * MIN_SEGMENT_EVENTS:
+        return None
+    best = None
+    for i in range(MIN_SEGMENT_EVENTS, n - MIN_SEGMENT_EVENTS + 1):
+        val = _seg_lnl(mags[:i], m0) + _seg_lnl(mags[i:], m0)
+        if best is None or val > best[1] + 1e-12:
+            best = (i, val)
+    i, val = best
+    return {"split_years": (times[i] - times[0]).total_seconds() / 86400.0 / 365.25,
+            "b_before": math.log10(math.e) / (sum(mags[:i]) / i - m0),
+            "b_after": math.log10(math.e) / (sum(mags[i:]) / (n - i) - m0),
+            "delta_lnl": val - _seg_lnl(mags, m0)}
+
+
+def test_segment_split_matches_mle_search():
+    """题面原文：「找分段时刻使两段对数似然之和最大，两段各至少 60 条」。
+
+    目录在观测期中段有一次 b 值抬升：最优分段时刻要在独立复算的值附近 0.15 年以内，
+    两段 b 值相差不超过 0.5%，对数似然增量相差不超过 0.05。
+    """
+    data = make_catalog(0.9, 2.5, 0.1, n=900, seed=1201, b_after=1.4, split_frac=0.5)
+    report, _ = run_case(data)
+    if not isinstance(report, dict):
+        return False
+    exp = segment_expected(data)
+    seg = report.get("segmentation")
+    if not isinstance(seg, dict) or exp is None:
+        return False
+    try:
+        span = float(seg["split_years"])
+        before = float(seg["b_before"])
+        after = float(seg["b_after"])
+        delta = float(seg["delta_lnl"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (abs(span - exp["split_years"]) <= 0.15
+            and abs(before - exp["b_before"]) <= 0.005 * exp["b_before"]
+            and abs(after - exp["b_after"]) <= 0.005 * exp["b_after"]
+            and abs(delta - exp["delta_lnl"]) <= 0.05)
 
 
 def main():

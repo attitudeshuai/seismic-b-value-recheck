@@ -20,41 +20,42 @@ class Lcg(object):
         return (self.state % 1000003) / 1000003.0
 
 
-def make_catalog(b_value=1.05, mc=2.5, bin_width=0.1, rate_above_mc=220.0, years=12.0,
+def make_catalog(b_value=1.05, b_after=None, split_frac=0.55, mc=2.5, bin_width=0.1,
+                 rate_above_mc=220.0, years=12.0,
                  n_below=40, seed=20261023, target_magnitude=6.5, horizon_years=30.0,
                  start_year=2011):
     rng = Lcg(seed)
     n = int(round(rate_above_mc * years))
-    beta = b_value * math.log(10.0)
+    # 先把时间与均匀量抽出来、按时间排序，再按时间位置决定该用哪条 G-R 斜率
+    raw = []
+    for _ in range(n):
+        raw.append((rng.next_u() * years, rng.next_u(), rng.next_u(), rng.next_u(), rng.next_u()))
+    raw.sort(key=lambda r: r[0])
     events = []
-    t0 = start_year
-    for i in range(n):
-        u = rng.next_u()
-        # 逆变换：M = mc + (-ln(1-u))/beta
-        mag = mc + (-math.log(1.0 - u * 0.999999)) / beta
-        mag = math.floor(mag / bin_width) * bin_width   # 震级按档向下取整入库
-        years_off = rng.next_u() * years
-        months = int(years_off * 12) % 12
-        day = int(years_off * 365) % 28 + 1
-        hour = int(years_off * 24) % 24
+    for pos, (off, u_mag, u_lon, u_lat, u_depth) in enumerate(raw):
+        frac = pos / float(n)
+        b_here = b_value if (b_after is None or frac < split_frac) else b_after
+        mag = mc + (-math.log(1.0 - u_mag * 0.999999)) / (b_here * math.log(10.0))
+        mag = math.floor(mag / bin_width) * bin_width
         events.append({
-            "id": "e%05d" % (i + 1),
-            "time_utc": "%04d-%02d-%02dT%02d:00:00Z" % (t0 + int(years_off), months + 1, day, hour),
-            "lon": round(100.0 + rng.next_u() * 4.0, 2),
-            "lat": round(24.0 + rng.next_u() * 3.0, 2),
-            "depth_km": round(5.0 + rng.next_u() * 25.0, 1),
+            "id": "e%05d" % (pos + 1),
+            "time_utc": "%04d-%02d-%02dT%02d:00:00Z" % (start_year + int(off), 1 + int(u_lon * 12) % 12,
+                                                       1 + int(u_lat * 28) % 28, int(u_depth * 24) % 24),
+            "lon": round(100.0 + u_lon * 4.0, 2),
+            "lat": round(24.0 + u_lat * 3.0, 2),
+            "depth_km": round(5.0 + u_depth * 25.0, 1),
             "mag": round(mag, 1),
         })
     for i in range(n_below):
-        mag = mc - bin_width * (1 + int(rng.next_u() * 6))
+        off = rng.next_u() * years
         events.append({
             "id": "s%05d" % (i + 1),
-            "time_utc": "%04d-%02d-%02dT%02d:00:00Z" % (t0 + int(rng.next_u() * years), 1 + int(rng.next_u() * 11),
+            "time_utc": "%04d-%02d-%02dT%02d:00:00Z" % (start_year + int(off), 1 + int(rng.next_u() * 11),
                                                        1 + int(rng.next_u() * 27), int(rng.next_u() * 23)),
             "lon": round(100.0 + rng.next_u() * 4.0, 2),
             "lat": round(24.0 + rng.next_u() * 3.0, 2),
             "depth_km": round(5.0 + rng.next_u() * 25.0, 1),
-            "mag": round(mag, 1),
+            "mag": round(mc - bin_width * (1 + int(rng.next_u() * 5)), 1),
         })
     events.sort(key=lambda e: e["time_utc"])
     return {
@@ -70,7 +71,7 @@ def make_catalog(b_value=1.05, mc=2.5, bin_width=0.1, rate_above_mc=220.0, years
 
 if __name__ == "__main__":
     out = sys.argv[1] if len(sys.argv) > 1 else "catalog.json"
-    data = make_catalog()
+    data = make_catalog(b_value=0.9, b_after=1.35, split_frac=0.55)
     with open(out, "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
         f.write("\n")

@@ -24,6 +24,7 @@
 3. b 值标准差按 `b / √N`。
 4. a 值按年化给出：`a = log10(N/T) + b·mc`，其中 `T` 是观测年数。
 5. 目标震级年发生率 `λ = 10^(a - b·M_target)`；时间窗内至少一次的概率按泊松过程 `1 - exp(-λT_h)`。
+6. 分段检验：在 mc 以上的事件序列里找一个分段时刻，使两段各自的 Aki-Utsu 对数似然之和最大（单段对数似然 `lnL = N·(ln β̂ - 1)`，`β̂ = 1/(M̄ - M0)`），两段各至少 60 条事件；报出这个分段时刻、两段各自的 b 值与相对单段的似然增量。
 
 ## 输出契约
 
@@ -41,12 +42,14 @@
   "a_value": 4.908,
   "annual_rate_target": 0.0173,
   "probability_horizon": 0.4046,
+  "segmentation": {"split_years": 6.21, "b_before": 0.871, "b_after": 1.319, "delta_lnl": 56.122},
   "meta": {"method": "aki-utsu", "target_magnitude": 6.5, "horizon_years": 30.0}
 }
 ```
 
 - `n_total` 是目录里的记录条数（含 mc 以下），`n_selected` 是参与统计的条数。
 - `observation_years` 保留两位小数；`b_value` / `b_sigma` / `a_value` 三位；`annual_rate_target` / `probability_horizon` 四位。
+- `segmentation.split_years` 是从目录最早事件起算的年数（两位小数），`b_before` / `b_after` 三位、`delta_lnl` 三位；样本不足 120 条时给 `null`。
 - `meta` 里照抄输入的目标震级与时间窗；数值必须是有限值，不许出现 `NaN` 或 `Infinity`。
 
 ## 运行与容错
