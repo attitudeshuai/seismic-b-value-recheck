@@ -36,11 +36,11 @@
 
 同一份目录重复运行，报告逐字节一致；运行失败时不能覆盖上一次的报告：先写临时文件再原子替换，非法目录以退出码 2 收场且不落文件。对应测试：test_rerun_produces_identical_bytes、test_failed_run_keeps_previous_report。
 
-第二套参数（b≈0.85、mc=3.0、档宽 0.05）另有 test_b_value_second_catalog_with_other_parameters 单独覆盖，防止把某一份目录的口径写死。
+第二套参数（b≈0.85、mc=3.0、档宽 0.05）另有 test_b_value_second_catalog_with_other_parameters 单独覆盖，防止把某一份目录的口径写死；样本不足 120 条时分段一栏必须是 null（test_segmentation_null_when_sample_small），所有事件同一时刻时观测时长为零、必须以退出码 2 拒收（test_zero_time_span_rejected）。
 
 ## 权重口径
 
-11 条测试：基准 b 值 0.14、第二套参数 0.12、档宽修正 0.11、a 值与年发生率 0.09、泊松概率 0.08、目录截断 0.09、分段最优 0.10、非法目录 0.11、输出契约 0.07、重复运行 0.05、失败不覆盖 0.04，和为 1。
+13 条测试：基准 b 值 0.12、第二套参数 0.10、档宽修正 0.09、a 值与年发生率 0.07、泊松概率 0.06、目录截断 0.07、分段最优 0.09、小样本分段为 null 0.08、零时长拒收 0.07、非法目录 0.09、输出契约 0.06、重复运行 0.05、失败不覆盖 0.05，和为 1。
 
 ## 定标依据（自检用）
 

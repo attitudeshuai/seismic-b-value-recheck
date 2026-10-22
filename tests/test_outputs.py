@@ -18,17 +18,19 @@ APP = os.environ.get("CT_APP_DIR", "/app")
 ENTRY = os.path.join(APP, "src", "seismic.py")
 
 WEIGHTS = {
-    "test_b_value_matches_aki_utsu_on_base_catalog": 0.14,
-    "test_b_value_second_catalog_with_other_parameters": 0.12,
-    "test_magnitude_bin_correction_matters": 0.11,
-    "test_a_value_and_annual_rate_match": 0.09,
-    "test_target_probability_matches_poisson": 0.08,
-    "test_catalog_truncated_at_completeness_magnitude": 0.09,
-    "test_segment_split_matches_mle_search": 0.10,
-    "test_invalid_catalog_rejected_without_output": 0.11,
-    "test_report_schema_and_rounding": 0.07,
+    "test_b_value_matches_aki_utsu_on_base_catalog": 0.12,
+    "test_b_value_second_catalog_with_other_parameters": 0.10,
+    "test_magnitude_bin_correction_matters": 0.09,
+    "test_a_value_and_annual_rate_match": 0.07,
+    "test_target_probability_matches_poisson": 0.06,
+    "test_catalog_truncated_at_completeness_magnitude": 0.07,
+    "test_segment_split_matches_mle_search": 0.09,
+    "test_segmentation_null_when_sample_small": 0.08,
+    "test_zero_time_span_rejected": 0.07,
+    "test_invalid_catalog_rejected_without_output": 0.09,
+    "test_report_schema_and_rounding": 0.06,
     "test_rerun_produces_identical_bytes": 0.05,
-    "test_failed_run_keeps_previous_report": 0.04,
+    "test_failed_run_keeps_previous_report": 0.05,
 }
 
 
@@ -211,6 +213,40 @@ def test_catalog_truncated_at_completeness_magnitude():
     return (report.get("n_selected") == exp["n_selected"]
             and report.get("n_total") == len(data["catalog"]["events"])
             and _close(report.get("b_value"), exp["b"], 0.002))
+
+
+def test_segmentation_null_when_sample_small():
+    """题面原文：「样本不足 120 条时 segmentation 给 null」。
+
+    110 条同一量级的目录：报告仍要出全其余字段，分段一栏必须是 null（不是空对象、不是省略）。
+    """
+    data = make_catalog(1.0, 2.5, 0.1, n=110, seed=1311)
+    report, _ = run_case(data)
+    if not isinstance(report, dict):
+        return False
+    if report.get("n_selected") != 110:
+        return False
+    if "segmentation" not in report:
+        return False
+    return report["segmentation"] is None and math.isfinite(float(report["b_value"]))
+
+
+def test_zero_time_span_rejected():
+    """题面原文：「时间窗不是正数、或观测时长算不出正数时以退出码 2 结束」。
+
+    所有事件同一时刻：观测时长为零，必须拒收、不落文件、stderr 非空。
+    """
+    data = make_catalog(1.0, 2.5, 0.1, n=150, seed=1409)
+    for e in data["catalog"]["events"]:
+        e["time_utc"] = "2015-06-01T00:00:00Z"
+    tmp = tempfile.mkdtemp(prefix="eq-span-")
+    cpath = os.path.join(tmp, "catalog.json")
+    opath = os.path.join(tmp, "report.json")
+    with open(cpath, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    proc = _run(cpath, opath)
+    return (proc.returncode == 2 and not os.path.exists(opath)
+            and bool((proc.stderr or "").strip()))
 
 
 def test_invalid_catalog_rejected_without_output():
